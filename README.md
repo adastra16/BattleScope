@@ -2,7 +2,7 @@
 
 A browser tool for Level Designers. It shows where players move, fight, loot and die on LILA BLACK's maps, and lets you replay any match.
 
-**Live app:** https://YOUR-PROJECT.vercel.app  ← replace after deploying (the API is at `/api`, docs at `/api/docs`)
+**Live app:** https://battle-scope.vercel.app
 **Docs:** [ARCHITECTURE.md](ARCHITECTURE.md) · [INSIGHTS.md](INSIGHTS.md)
 
 ## Architecture at a glance
