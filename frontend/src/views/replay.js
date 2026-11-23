@@ -4,14 +4,14 @@ import { MapCanvas } from '../mapview.js';
 import { drawHead, drawMarkers, drawPath } from '../render.js';
 import { CATEGORY_OF, COLORS, DEATHS, EV, describeEvent, fmtDay, fmtTime, prettyMap, shortId } from '../constants.js';
 import {
-  blip, confetti, dayChips, debounce, field, h, latestGuard, markerChips, panel, segmented, select, toggle, viewHead,
+  MARKER_ICONS, blip, confetti, dayChips, debounce, field, h, latestGuard, markerChips, panel, segmented, select, toggle, viewHead,
 } from '../ui.js';
 
 export function mount(root, app) {
   const { meta } = app;
   const S = (app.state.replay ??= {
     days: new Set(meta.days), search: '', sort: 'players', multi: false,
-    humans: true, bots: true, paths: true, cats: { kill: true, death: true, storm: true, loot: false }, speed: 1, matchId: null,
+    humans: true, bots: true, paths: true, cats: { kill: true, death: true, storm: true, loot: true }, speed: 1, matchId: null,
   });
   const guard = latestGuard();
   let alive = true, match = null, list = null;
@@ -40,8 +40,13 @@ export function mount(root, app) {
   const mapHost = h('div', { class: 'map-host' });
   const map = new MapCanvas(mapHost, { interactive: true, controls: true });
   map.setMap(meta.maps[app.prefs.map].image);
+  const legend = h('div', { class: 'legend', html: `<div class="hd">Who</div>
+    <div class="li"><svg width="26" height="10"><line x1="1" y1="5" x2="25" y2="5" stroke="${COLORS.human}" stroke-width="3"/></svg>Human: solid path, round head</div>
+    <div class="li"><svg width="26" height="10"><line x1="1" y1="5" x2="25" y2="5" stroke="${COLORS.bot}" stroke-width="2" stroke-dasharray="5 3"/></svg>Bot: dashed path, diamond head</div>
+    <div class="hd">Events</div>
+    <div class="li wrap">${[['kill', 'Kill'], ['death', 'Death'], ['storm', 'Storm death'], ['loot', 'Loot']].map(([k, l]) => `<span class="mk">${MARKER_ICONS[k]}${l}</span>`).join('')}</div>` });
   const playersEl = h('div', { class: 'players', hidden: true });
-  map.wrap.append(playersEl);
+  map.wrap.append(playersEl, legend);
   const empty = h('div', { class: 'empty-state over', hidden: true }, blip(64), h('p', {}, 'Pick a match on the left and I\'ll press play.'));
   map.wrap.append(empty);
 

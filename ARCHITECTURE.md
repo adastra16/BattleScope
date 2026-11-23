@@ -1,86 +1,55 @@
 # Architecture
 
-Three independent pieces with one-way dependencies: **ETL pipeline → API backend → web frontend**.
+**Raw parquet → ETL → numpy store → FastAPI → canvas UI**, all in one Vercel project (static frontend + a Python function on the same origin).
 
 ```
- player_data/ (1,243 parquet files, 34 MB)
-        │  pipeline/build.py  (run once, offline)
-        ▼
- backend/data/store.npz        88,894 clean events as numpy arrays (0.7 MB)      frontend/minimaps/*.jpg  (2048², static)
- backend/data/matches.json     796 match summaries
- backend/data/meta.json        map config, days, data-quality report
- backend/data/*.parquet        the same data as parquet, for analysts (not read by the API)
-        │  loaded into memory when the function starts
-        ▼
-  backend/ — FastAPI on Vercel  /api/meta  /api/maps/{map}/matches  /api/matches/{id}
-                               /api/maps/{map}/heatmap  /events  /summary  /zones  /flow
-        │  JSON over HTTP, same origin (gzip, edge-cached)
-        ▼
- frontend/ — static HTML/JS + Canvas, served by the same Vercel project
+player_data/ (1,243 parquet files)  →  pipeline/build.py (offline, once)
+   → backend/data/store.npz + matches.json + meta.json (<1 MB)   frontend/minimaps/*.jpg (2048², static)
+   → backend/ FastAPI: /api/{meta, maps/{map}/matches|heatmap|events|summary|zones|flow, matches/{id}}
+   → frontend/ vanilla JS + Canvas: five sections, each with its own filters
 ```
 
-## What I built with, and why
-
+## Stack and why
 | Piece | Choice | Why |
 |---|---|---|
-| ETL | **Python**: pyarrow, pandas, Pillow | Parquet is native to pyarrow. Every data fix happens here, once: byte decoding, timestamp units, bot detection, dedupe, coordinate transform. Nothing downstream has to know the raw format. |
-| Store | **`store.npz` + `matches.json`** (plus parquet copies for analysts) | Compressed numpy arrays: 34 MB of raw files become under 1 MB, and loading needs nothing but numpy. The pipeline also writes the same data as parquet for notebooks, but the API never reads it. |
-| Backend | **FastAPI + numpy only, all in memory** | 89k rows fits in a few MB of RAM. Each query is a vectorised mask plus `bincount`, at about 1–5 ms. Validation, typed params and interactive docs (`/api/docs`) come free. No database, and no pandas or pyarrow at runtime, so the function bundle is about 40 MB. |
-| Frontend | **Vanilla ES modules + Canvas 2D, no build step** | The hard part is drawing thousands of points, paths and a heatmap at 60 fps, which Canvas does directly. A framework or bundler would add tooling without helping with that. |
-| Hosting | **One Vercel project** | Static CDN for the UI and a Python function for the API on the same origin: no CORS, no second service, no environment variables. Because the runtime needs only numpy and loads under a megabyte of data, cold starts are quick, and responses are edge-cached (the data never changes between deploys). |
+| ETL | Python (pyarrow, pandas, Pillow) | Every data quirk is fixed once, offline. Nothing downstream sees the raw format. |
+| Store | `store.npz` + `matches.json` (parquet copy for analysts) | 34 MB of files become under 1 MB; the API needs only numpy. |
+| API | FastAPI + numpy, all in memory | 89k rows fit in RAM. Each query is a vectorised mask or `bincount` (1–5 ms), so there is no database and cold starts are small. |
+| UI | Vanilla ES modules + Canvas 2D, no build step | The hard part is drawing thousands of points, paths and a heatmap at 60 fps. A framework adds tooling without helping. |
 
-## Data flow and responsibilities
-
-* **Pipeline** (`pipeline/build.py`). Reads every file and skips and logs unreadable ones (all 1,243 read). It decodes `event` bytes, strips `.nakama-0`, flags bots by `user_id`, converts `ts`, computes `t` (seconds since the match's first event), drops duplicate movement samples and maps (x, z) → (u, v). It also writes the data-quality report.
-* **Backend** (`backend/app/store.py`) handles all filtering and aggregation:
-  * the match catalogue: filter by map, days, search and 2+ players; sort; per-day counts; summary totals
-  * replay assembly: per-player paths and events, time-ordered
-  * heatmaps: a 256×256 **count grid** for any layer, day set, humans/bots, single match or "first N seconds"
-  * overview event points
-  * `summary`: KPIs, how runs end and when players die, from a per-journey table built at startup
-  * `zones`: per-zone (8×8) traffic, loot, kills, deaths and storm with a rule-based design tag (killzone, safe farm, storm trap, quiet, balanced)
-  * `flow`: zone-to-zone crossings (consecutive position samples of one journey in different zones), counted both as crossings and as distinct runs. Drives the animated Flow layer and the inspector's arrive-from / leave-to lists
-  * every map-level query accepts a time window (`t_min`, `t_max`), dates, humans/bots and a single match
-* **Frontend** (`frontend/src/`) is five sections (Briefing, Map Lab, Replay, Compare, Design Radar), each a module in `views/` with its **own filter bar**, mounted by a small hash router in `app.js`. They share a reusable map canvas (`mapview.js`) and a small UI kit (`ui.js`). Presentation only: blur and colour the heat grid, draw paths, markers and heads, run playback, pan and zoom, hover, and keep the view in the URL. Responses are cached per URL, and stale replies (from fast clicking) are discarded.
+## Data flow
+1. **Pipeline** decodes event bytes, flags bots by `user_id`, treats `ts` as seconds, drops duplicate movement samples, maps `(x, z)` to minimap UV and resizes the minimaps. It also writes the data-quality report.
+2. **API** does all filtering and aggregation (map, dates, humans/bots, match, time window): match list, replay paths, heat grids, event points, KPIs, per-zone stats and zone-to-zone flow.
+3. **UI** only presents: it smooths and colours the heat grid, draws paths and markers, runs playback and keeps the view in the URL.
 
 ## Coordinate mapping
-
-The README gives a per-map `scale` and `origin`. I map in **normalised UV space**, never in pixels:
+The README gives a scale and origin per map. I map into **normalised UV space**, never pixels:
 
 ```
-u = (x − originX) / scale          v = (z − originZ) / scale        (y = elevation, ignored for 2D)
-screenX = mapLeft + u · mapSize    screenY = mapTop + (1 − v) · mapSize     ← v flipped: image rows run downward
-heat cell = (⌊(1 − v)·256⌋, ⌊u·256⌋)                                           (backend/app/store.py)
+u = (x − originX) / scale        v = (z − originZ) / scale        (y is elevation, ignored in 2D)
+screenX = mapLeft + u · size     screenY = mapTop + (1 − v) · size     (v flipped: image rows run downward)
 ```
-
-The UV step is done once, in the pipeline. The frontend camera (`frontend/src/view.js`) only scales UV to the on-screen map size. **This matters** because the README says the minimaps are 1024×1024 but they are actually **4320², 2160×2158 and 9000²**. Using the README's `·1024` against the real images would squash every point into a corner.
-
-I verified the mapping three ways:
-1. All 88,894 points fall inside [0, 1] UV, so there are zero out-of-bounds points (the report and a test assert this).
-2. Plotting every sample on each minimap puts paths on roads, bridges and building interiors, never in water or the black void.
-3. The README's worked example (−301.45, −355.55 → px 78, 890) reproduces exactly.
+The UV step happens once, in the pipeline, so the image's pixel size never enters the maths. That matters because the README says the minimaps are 1024², but they are **4320², 2160×2158 and 9000²**; using `·1024` would squash every point into a corner. Checked three ways: all 88,894 points fall inside [0, 1] (a test asserts it); plotting every sample puts paths on roads and buildings, never in water or void; and the README's worked example (−301.45, −355.55 → px 78, 890) reproduces exactly.
 
 ## Assumptions where the data was ambiguous
-
-| What I found | How I handled it |
+| Found | Handled |
 |---|---|
-| `ts` is typed `timestamp[ms]`, but read as ms every match is under 1 s long and dated 1970-01-21. The raw integers are Unix **seconds** (they decode to Feb 10–14 2026, matching the folders). | Treat the raw int as seconds. Matches run a median of about 6 min and up to about 15 min. |
-| Bots should emit only `BotPosition`, but numeric IDs `1379`, `1402` and `1429` also log `Position`/`Loot` (751 rows). | Human vs bot comes from the file's `user_id`, as the README defines, never from the event name. A test enforces this. |
-| `BotKill`/`BotKilled` also appear in bot files. | An event belongs to its file's owner. In a bot's file, `BotKilled` means *this bot died*. Tooltips are worded accordingly. |
-| 1,505 exact duplicate rows. | Drop the 210 duplicate *movement* samples. Keep the 1,295 duplicate `Loot`/kill rows, since several pickups in one tick is plausible. |
-| 779 of 796 matches contain exactly **one** human file. Only 3 human-vs-human kills exist. | Replays show what was recorded. The "2+ players" filter surfaces the fuller matches. Overview heatmaps aggregate across matches, which is where the signal is. |
-| There is no extraction event. | A human journey with no death is labelled "no death" and treated as a *likely* extraction in the insights. |
-| Position is sampled about every 5 s, with gaps up to 518 s. | Gaps over 30 s are drawn as breaks, and playback interpolates only within a gap. |
-| One match straddles midnight across two day folders. | Each match belongs to its start day (stored on every event), so a day filter never splits a match. |
-| Grand Rift's minimap is 2160×2158. | Stretched to 2048² (0.1 % distortion, under a pixel). |
+| `ts` is typed ms but every match is under 1 s long | The integers are Unix **seconds** (they decode to Feb 10–14 2026). Matches run about 6 min, up to 15. |
+| 3 numeric (bot) IDs also log `Position`/`Loot` | Human vs bot comes from the file's `user_id`, never the event name. |
+| `BotKilled` also appears in bot files | An event belongs to its file's owner: in a bot's file it means that bot died. |
+| 1,505 duplicate rows | Drop the 210 duplicate movement samples; keep the 1,295 duplicate loot/kill rows (several pickups per tick is plausible). |
+| 779 of 796 matches hold one human; only 3 human-vs-human kills | Replay shows what was recorded; aggregate views carry the signal. "2+ players" finds fuller matches. |
+| No extraction event | A run with no death is treated as a likely extraction, and labelled so. |
+| Sampling about every 5 s, gaps up to 518 s | Gaps over 30 s draw as breaks, not lines; playback interpolates inside gaps only. |
+| One match spans two day folders | It belongs to the day it started. |
+| Zone types (meat grinder, loot buffet…) | Simple rules in `backend/app/store.py` (`_tag`), e.g. deaths ≥ 1.5× fair share with ≥ 5 deaths. They are heuristics, not facts. |
 
 ## Major trade-offs
-
 | Decision | Considered | Chose, and why |
 |---|---|---|
-| Static JSON files vs an API | v1 of this project pre-baked JSON for a static site | **Separate API**. Filtering and aggregation live in one tested place. The frontend stays thin and payloads shrink: a gzipped heat grid is 1–40 KB instead of 1.3 MB of raw points. New queries don't need a rebuild, and other tools (notebooks, dashboards) can use the same endpoints. The cost is a second service to host. |
-| Query engine | DuckDB, SQLite, Postgres | **In-memory numpy**. The data is about 90k rows, so a database adds ops for no speed gain. DuckDB over the same parquet is the upgrade path if the data grows 100×. |
-| Where heatmaps are computed | Client binning; pre-rendered PNGs | **Server bins, client smooths and colours**. Counts are data and are filterable server-side. Blur, colour ramp and opacity are presentation, adjusted instantly in the browser. |
-| Overview scrubbing cost | Request a heat grid for every frame | Quantise `t_max` to 5 s steps and cache by URL. Playback triggers about 1 cheap request per step, and responses stay ordered. |
-| Frontend framework | React + Vite; Streamlit | **Vanilla JS + Canvas**. Streamlit can't do smooth playback or pan and zoom, and React adds a build chain without solving rendering. |
-| Raw data in git | Commit the 34 MB dump | Only the derived store (about 3 MB) is committed. `build.py` regenerates it deterministically. |
+| Precomputed JSON vs API | Static JSON per match and map | **API.** Filters live in one tested place and payloads stay small (a heat grid is 1–40 KB). Costs one function. |
+| Query engine | DuckDB, SQLite, Postgres | **In-memory numpy.** About 90k rows; a database adds ops for no speed. DuckDB is the upgrade path at 100× the data. |
+| Runtime deps | pandas + pyarrow in the function | **numpy only.** Keeps the function about 40 MB with fast cold starts; pandas stays in the offline pipeline. |
+| Heatmaps | Client binning; pre-rendered PNGs | **Server counts, client smooths.** Counts follow every filter; colour and opacity change instantly. |
+| Hosting | Separate API host + static host | **One Vercel project.** Same origin, no CORS, no env vars. |
+| Frontend | React + Vite, Streamlit | **Vanilla JS + Canvas.** Streamlit can't do smooth playback or pan/zoom; React adds a build chain without solving rendering. |

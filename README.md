@@ -89,11 +89,13 @@ Python dependencies come from the root [`requirements.txt`](requirements.txt) (j
 
 ## Walkthrough
 
-1. **Briefing.** Open the app. The intel line and KPIs summarise Ambrose Valley. Switch Players to *Bots* or untick dates and everything recomputes. Click a map card to switch map.
-2. **Map Lab.** Pick *Deaths*, drag the match-time window to the first five minutes, or press **Sweep** to watch deaths accumulate. Turn on *Zone grid* and click a zone to read its traffic, loot, kills and risk.
-3. **Replay.** Sort the list by *Most combat*, pick a match and let it autoplay. Click a player in the panel to isolate their route. Pause and copy the URL to share that exact moment.
-4. **Compare.** Choose *Loot vs Deaths*. Lime marks where loot is concentrated relative to deaths (the safe towns) and fuchsia marks where deaths dominate (the central killzone).
-5. **Design Radar.** Read the auto-generated findings, hover a bubble to light up its zone on the map, and filter the table by zone type.
+Every section has its own filter bar (map, dates, humans/bots, plus what that view needs).
+
+1. **Briefing.** The intel line, KPIs and "hall of fame" summarise a map. Switch map with the tabs, untick dates, or flip Players to *Bots* and everything recomputes. Click a map card to switch.
+2. **Map Lab (heatmaps and markers).** Pick *Traffic*, *Kills* or *Deaths* for the heatmap. Turn on the *Kills / Deaths / Storm deaths / Loot* marker chips. Drag the match-time window, or press **Sweep** to watch the map fill in over time. Turn on *Zone grid* and click a zone to read its traffic, loot, kills, risk and where players arrive from and leave to. Switch to *Flow ➜* for animated arrows showing where players walk.
+3. **Replay (paths, humans vs bots, timeline).** Filter the match list by map, date or search, sort by *Most combat*, then pick a match. Humans have a solid cyan path and a round head; bots have a dashed orange path and a diamond head (the legend is on the map). Kills, deaths, storm deaths and loot pop up as they happen. Play/pause with space, scrub, choose 0.1×–10× (or press `[` / `]`), and click a player to focus their route. Pause and copy the URL to share that exact moment.
+4. **Compare.** Choose a preset such as *Loot vs Deaths* or *Humans vs Bots*, or tune either side. The centre map shows where side A (yellow) or side B (pink) dominates; all three maps pan and zoom together.
+5. **Design Radar.** Zones are scored for risk and reward and tagged. Read the auto-written findings, hover a bubble to light up its zone, filter the table, and click **Copy report** to paste the findings into Notion or Jira.
 
 ## Repo layout
 
