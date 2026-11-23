@@ -2,17 +2,16 @@
 
 A browser tool for Level Designers. It shows where players move, fight, loot and die on LILA BLACK's maps, and lets you replay any match.
 
-**Live app:** https://YOUR-FRONTEND.vercel.app  ← replace after deploying
-**Live API:** https://YOUR-API.onrender.com/docs  ← replace after deploying
+**Live app:** https://YOUR-PROJECT.vercel.app  ← replace after deploying (the API is at `/api`, docs at `/api/docs`)
 **Docs:** [ARCHITECTURE.md](ARCHITECTURE.md) · [INSIGHTS.md](INSIGHTS.md)
 
 ## Architecture at a glance
 
 | Folder | What | Tech | Hosted on |
 |---|---|---|---|
-| [`pipeline/`](pipeline/) | ETL: raw parquet → clean parquet store + web minimaps | Python, pyarrow, pandas, Pillow | runs offline |
-| [`backend/`](backend/) | REST API: matches, replays, heatmaps, events, timeline | FastAPI, numpy, pandas | Render |
-| [`frontend/`](frontend/) | UI: map, replay, heatmaps, filters | HTML + CSS + vanilla JS modules, Canvas 2D, no build step | Vercel |
+| [`pipeline/`](pipeline/) | ETL: raw parquet → compact numpy store + web minimaps | Python, pyarrow, pandas, Pillow | runs offline |
+| [`backend/`](backend/) | REST API: matches, replays, heatmaps, events, summary, zones, flow | FastAPI + numpy only | Vercel (Python function at `/api`) |
+| [`frontend/`](frontend/) | UI: map, replay, heatmaps, filters | HTML + CSS + vanilla JS modules, Canvas 2D, no build step | Vercel (static) |
 
 Details and trade-offs are in [ARCHITECTURE.md](ARCHITECTURE.md).
 
@@ -49,14 +48,14 @@ pip install -r pipeline/requirements.txt -r backend/requirements.txt
 # 1. (Optional) rebuild the data store from the raw dump. The processed store is already committed.
 python -I pipeline/build.py /path/to/player_data backend/data frontend
 
-# 2. Start the API → http://localhost:8000  (interactive docs at /docs)
+# 2. Start the API → http://localhost:8000  (interactive docs at /api/docs)
 cd backend && uvicorn app.main:app --port 8000
 
 # 3. In another terminal, serve the frontend → http://localhost:5173
 cd frontend && python3 -m http.server 5173
 ```
 
-Open **http://localhost:5173**. The frontend reads the API location from [`frontend/config.js`](frontend/config.js) (default `http://localhost:8000`). You can also override it per visit with `?api=https://host`.
+Open **http://localhost:5173**. On port 5173 the frontend talks to the API on `http://localhost:8000`; deployed on Vercel it uses the same origin (`/api/...`). See [`frontend/config.js`](frontend/config.js); you can also override it per visit with `?api=https://host`.
 
 Tests, audit and stats:
 
@@ -71,25 +70,22 @@ python -I pipeline/insights.py backend/data       # reproduces every number in I
 
 | Var | Default | Purpose |
 |---|---|---|
-| `DATA_DIR` | `backend/data` | Location of `events.parquet`, `matches.parquet`, `meta.json` |
-| `CORS_ORIGINS` | `*` | Comma-separated allowed origins, e.g. `https://battlescope.vercel.app` |
-| `PORT` | set by host | Port uvicorn binds to (Render injects it) |
+| `DATA_DIR` | `backend/data` | Folder with `store.npz`, `matches.json`, `meta.json` |
+| `CORS_ORIGINS` | `*` | Comma-separated allowed origins (only matters if the frontend is hosted on a different origin) |
 
-The frontend has no env vars. Its one setting, `apiBase`, lives in `frontend/config.js`.
+On Vercel no variables are needed: the frontend and the API share one origin.
 
-## Deploy
+## Deploy (Vercel only)
 
-**Backend → Render**
+One Vercel project serves both parts: the static frontend from `frontend/` and the API as a Python function from [`api/index.py`](api/index.py). Everything is configured in [`vercel.json`](vercel.json), so there are no environment variables and no second service.
+
 1. Push the repo to GitHub.
-2. Render → **New → Blueprint** → pick the repo. [`render.yaml`](render.yaml) configures everything (root `backend/`, `uvicorn app.main:app`, health check `/api/health`).
-3. Note the URL, e.g. `https://battlescope-api.onrender.com`.
+2. Vercel → **Add New → Project** → import the repo.
+3. Leave **Root Directory** as the repo root and set **Framework Preset** to **Other**. Leave Build, Output and Install commands as they are (`vercel.json` sets them).
+4. Click **Deploy**.
+5. Check it: open `https://<your-project>.vercel.app/api/health` (should show `{"status":"ok","matches":796}`), then the site itself.
 
-**Frontend → Vercel**
-1. Set `apiBase` in [`frontend/config.js`](frontend/config.js) to the Render URL. Commit and push.
-2. Vercel → **Add New → Project** → import the repo → set **Root Directory = `frontend`**, Framework preset **Other**, and leave the build command empty.
-3. Deploy. Optionally set `CORS_ORIGINS` on Render to the Vercel URL.
-
-> Render's free tier sleeps when idle, so the first request after a while can take about 30 s while it wakes.
+Python dependencies come from the root [`requirements.txt`](requirements.txt) (just `fastapi` and `numpy`). Later pushes to `main` redeploy automatically.
 
 ## Walkthrough
 
@@ -102,15 +98,15 @@ The frontend has no env vars. Its one setting, `apiBase`, lives in `frontend/con
 ## Repo layout
 
 ```
-pipeline/build.py            raw parquet → backend/data/*.parquet + meta.json, frontend/minimaps/*.jpg
+pipeline/build.py            raw parquet → backend/data/{store.npz,matches.json,meta.json,*.parquet}, frontend/minimaps/*.jpg
 pipeline/audit.py            independent raw-data vs API consistency check
 pipeline/insights.py         reproducible stats behind INSIGHTS.md
 pipeline/explore.py          initial data-quality exploration
-backend/app/main.py          FastAPI routes, validation, CORS/gzip
-backend/app/store.py         in-memory query layer: filters, replay, heat grid, timeline, summary, zone analytics
+backend/app/main.py          FastAPI routes, validation, CORS/gzip (docs at /api/docs)
+backend/app/store.py         numpy-only query layer: filters, replay, heat grid, summary, zones, flow
 backend/tests/test_api.py    API tests (11)
-backend/data/                clean data store (committed, 2.4 MB)
-frontend/index.html          shell (left rail + view container)     frontend/config.js   API base URL
+backend/data/                processed store (committed, ~3 MB; the API reads store.npz + matches.json)
+frontend/index.html          shell (left rail + view container)     frontend/config.js   API base URL (same origin on Vercel)
 frontend/src/app.js          rail navigation + hash router + About dialog
 frontend/src/views/          overview · explore · replay · compare · radar   (one module per section)
 frontend/src/ui.js           DOM helper + shared filter controls (segmented, date chips, time window, ...)
@@ -120,5 +116,7 @@ frontend/src/heatmap.js      smoothing + colour ramp, plus the A-vs-B difference
 frontend/src/render.js       canvas drawing: markers, paths, heads, grid
 frontend/src/api.js          API client (cached)    frontend/src/view.js   UV → screen camera
 frontend/src/constants.js    event codes, colours, zone tags, labels
-render.yaml                  backend deploy         frontend/vercel.json   frontend deploy
+api/index.py                 Vercel function entrypoint (exposes backend/app as /api)
+vercel.json                  Vercel config: static frontend + /api function + cache headers
+requirements.txt             Python deps for the Vercel function (fastapi, numpy)
 ```

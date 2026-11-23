@@ -6,16 +6,17 @@ Three independent pieces with one-way dependencies: **ETL pipeline → API backe
  player_data/ (1,243 parquet files, 34 MB)
         │  pipeline/build.py  (run once, offline)
         ▼
- backend/data/events.parquet   88,894 clean events (2.3 MB)      frontend/minimaps/*.jpg  (2048², static)
- backend/data/matches.parquet  796 match summaries
+ backend/data/store.npz        88,894 clean events as numpy arrays (0.7 MB)      frontend/minimaps/*.jpg  (2048², static)
+ backend/data/matches.json     796 match summaries
  backend/data/meta.json        map config, days, data-quality report
-        │  loaded into memory at startup
+ backend/data/*.parquet        the same data as parquet, for analysts (not read by the API)
+        │  loaded into memory when the function starts
         ▼
- backend/ — FastAPI (Render)   /api/meta  /api/maps/{map}/matches  /api/matches/{id}
+  backend/ — FastAPI on Vercel  /api/meta  /api/maps/{map}/matches  /api/matches/{id}
                                /api/maps/{map}/heatmap  /events  /summary  /zones  /flow
-        │  JSON over HTTP (CORS, gzip)
+        │  JSON over HTTP, same origin (gzip, edge-cached)
         ▼
- frontend/ — static HTML/JS + Canvas (Vercel); API base URL set in frontend/config.js
+ frontend/ — static HTML/JS + Canvas, served by the same Vercel project
 ```
 
 ## What I built with, and why
@@ -23,10 +24,10 @@ Three independent pieces with one-way dependencies: **ETL pipeline → API backe
 | Piece | Choice | Why |
 |---|---|---|
 | ETL | **Python**: pyarrow, pandas, Pillow | Parquet is native to pyarrow. Every data fix happens here, once: byte decoding, timestamp units, bot detection, dedupe, coordinate transform. Nothing downstream has to know the raw format. |
-| Store | **Two parquet files** | Columnar, typed and compressed (34 MB → 2.4 MB). The same format the data arrived in, so analysts can open it with any tool. |
-| Backend | **FastAPI + numpy, all in memory** | 89k rows fits in a few MB of RAM. Each query is a vectorised mask plus `bincount`, at about 1–5 ms. Validation, typed params and interactive docs (`/docs`) come free. No database to run. |
+| Store | **`store.npz` + `matches.json`** (plus parquet copies for analysts) | Compressed numpy arrays: 34 MB of raw files become under 1 MB, and loading needs nothing but numpy. The pipeline also writes the same data as parquet for notebooks, but the API never reads it. |
+| Backend | **FastAPI + numpy only, all in memory** | 89k rows fits in a few MB of RAM. Each query is a vectorised mask plus `bincount`, at about 1–5 ms. Validation, typed params and interactive docs (`/api/docs`) come free. No database, and no pandas or pyarrow at runtime, so the function bundle is about 40 MB. |
 | Frontend | **Vanilla ES modules + Canvas 2D, no build step** | The hard part is drawing thousands of points, paths and a heatmap at 60 fps, which Canvas does directly. A framework or bundler would add tooling without helping with that. |
-| Hosting | **Vercel** (frontend), **Render** (API) | Static CDN for the UI. A long-running Python process for the API keeps the dataset warm in memory; serverless would reload it on every cold start, and pandas/pyarrow exceed Vercel's function size limit. |
+| Hosting | **One Vercel project** | Static CDN for the UI and a Python function for the API on the same origin: no CORS, no second service, no environment variables. Because the runtime needs only numpy and loads under a megabyte of data, cold starts are quick, and responses are edge-cached (the data never changes between deploys). |
 
 ## Data flow and responsibilities
 
@@ -82,4 +83,4 @@ I verified the mapping three ways:
 | Where heatmaps are computed | Client binning; pre-rendered PNGs | **Server bins, client smooths and colours**. Counts are data and are filterable server-side. Blur, colour ramp and opacity are presentation, adjusted instantly in the browser. |
 | Overview scrubbing cost | Request a heat grid for every frame | Quantise `t_max` to 5 s steps and cache by URL. Playback triggers about 1 cheap request per step, and responses stay ordered. |
 | Frontend framework | React + Vite; Streamlit | **Vanilla JS + Canvas**. Streamlit can't do smooth playback or pan and zoom, and React adds a build chain without solving rendering. |
-| Raw data in git | Commit the 34 MB dump | Only the derived 2.4 MB parquet store is committed. `build.py` regenerates it deterministically. |
+| Raw data in git | Commit the 34 MB dump | Only the derived store (about 3 MB) is committed. `build.py` regenerates it deterministically. |
