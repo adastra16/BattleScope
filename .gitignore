@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.vercel/
+# raw telemetry dump is not committed; regenerate backend/data with pipeline/build.py
+player_data/
+player_data.zip
+*.pkl
+.pytest_cache/
