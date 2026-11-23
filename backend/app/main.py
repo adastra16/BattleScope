@@ -19,6 +19,9 @@ app = FastAPI(
     title="BattleScope API",
     version="1.0.0",
     description="Player journeys, combat, loot and storm events from LILA BLACK telemetry.",
+    docs_url="/api/docs",
+    openapi_url="/api/openapi.json",
+    redoc_url=None,
 )
 app.add_middleware(CORSMiddleware, allow_origins=CORS_ORIGINS, allow_methods=["GET"], allow_headers=["*"])
 app.add_middleware(GZipMiddleware, minimum_size=1024)

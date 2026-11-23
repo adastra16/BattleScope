@@ -1,17 +1,18 @@
 """
-In-memory query layer over the clean parquet store produced by pipeline/build.py.
+In-memory query layer over the processed store produced by pipeline/build.py.
 
-The whole dataset (~89k events) fits comfortably in memory, so every query is a vectorised numpy mask
-over pre-extracted column arrays — typically well under 10 ms. No database needed at this scale.
+The only runtime dependency is numpy: the whole dataset (~89k events) is a handful of arrays, so every query is a
+vectorised mask or bincount (typically 1-5 ms), the bundle stays small enough for a serverless function, and cold
+starts are fast. Events are stored sorted by (match, player, time), which several queries rely on.
 """
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
 HEAT_N = 256          # heatmap grid resolution (cells per side)
 MOVEMENT_CODES = (0, 1)
@@ -39,46 +40,76 @@ class Store:
     def __init__(self, data_dir: Path):
         data_dir = Path(data_dir)
         self.meta = json.loads((data_dir / "meta.json").read_text())
-        ev = pd.read_parquet(data_dir / "events.parquet")
-        self.matches = pd.read_parquet(data_dir / "matches.parquet").set_index("id", drop=False)
+        self.matches: list[dict] = json.loads((data_dir / "matches.json").read_text())
+        self._match_pos = {m["id"]: i for i, m in enumerate(self.matches)}
+        self._maps = list(self.meta["maps"])
+        self._days = list(self.meta["days"])
 
-        # Column arrays for fast masking
-        self._map = ev["map_id"].astype(str).to_numpy()
-        self._day = ev["day"].astype(str).to_numpy()
-        self._match = ev["match_id"].astype(str).to_numpy()
-        self._user = ev["user_id"].astype(str).to_numpy()
-        self._bot = ev["is_bot"].to_numpy()
-        self._t = ev["t"].to_numpy()
-        self._code = ev["code"].to_numpy()
-        self._u = ev["u"].to_numpy()
-        self._v = ev["v"].to_numpy()
+        z = np.load(data_dir / "store.npz")
+        self._users = z["users"]
+        self._match_i = z["match"].astype(np.int64)
+        self._user_i = z["user"].astype(np.int64)
+        self._bot = z["bot"].astype(bool)
+        self._map_i = z["map"].astype(np.int64)
+        self._day_i = z["day"].astype(np.int64)
+        self._t = z["t"]
+        self._code = z["code"]
+        self._u = z["u"]
+        self._v = z["v"]
+        n = len(self._t)
+
         gx = np.minimum(HEAT_N - 1, (self._u * HEAT_N).astype(np.int32))
         gy = np.minimum(HEAT_N - 1, ((1 - self._v) * HEAT_N).astype(np.int32))  # image rows run downward
         self._cell = gy * HEAT_N + gx
-        self._rows_by_match = {k: np.asarray(v) for k, v in ev.groupby("match_id", observed=True).indices.items()}
-        # 8x8 zone index (row-major, row 0 = north) and an integer match id, for zone analytics
+        # 8x8 zone index (row-major, row 0 = north), for zone analytics
         self._z8 = (np.minimum(Z - 1, ((1 - self._v) * Z).astype(np.int32)) * Z
-                    + np.minimum(Z - 1, (self._u * Z).astype(np.int32)))
-        self._mi = pd.factorize(self._match)[0]
-        self.journeys = self._build_journeys(ev)
-        # integer id per (match, player) journey; rows are stored sorted by journey then time, which `flow` relies on
-        self._ji = pd.factorize(pd.Series(self._match) + "|" + pd.Series(self._user))[0]
+                    + np.minimum(Z - 1, (self._u * Z).astype(np.int32))).astype(np.int64)
+        self._mi = self._match_i
+
+        # a journey is a run of equal (match, player); rows are stored sorted so these runs are contiguous
+        new = np.ones(n, dtype=bool)
+        new[1:] = (self._match_i[1:] != self._match_i[:-1]) | (self._user_i[1:] != self._user_i[:-1])
+        self._ji = np.cumsum(new) - 1
+        first = np.flatnonzero(new)
+        self._jmatch, self._jmap, self._jday, self._jbot = (a[first] for a in (self._match_i, self._map_i, self._day_i, self._bot))
+        # how each journey ended: its first death event (code, time); -1 = never died
+        dead = np.flatnonzero(np.isin(self._code, DEATH_CODES))
+        jd, at = np.unique(self._ji[dead], return_index=True)
+        self._jdeath_code = np.full(len(first), -1, dtype=np.int64)
+        self._jdeath_t = np.zeros(len(first), dtype=np.int64)
+        self._jdeath_code[jd] = self._code[dead[at]]
+        self._jdeath_t[jd] = self._t[dead[at]]
+
+        # row indices belonging to each match
+        order = np.argsort(self._match_i, kind="stable")
+        bounds = np.concatenate([[0], np.cumsum(np.bincount(self._match_i, minlength=len(self.matches)))])
+        self._rows = [order[bounds[i]:bounds[i + 1]] for i in range(len(self.matches))]
+
+    @cached_property
+    def _user(self) -> np.ndarray:
+        """Per-event player id strings (only built when needed, e.g. by tests)."""
+        return self._users[self._user_i]
 
     # ------------------------------------------------------------------ helpers
     def has_map(self, map_id: str) -> bool:
         return map_id in self.meta["maps"]
 
     def has_match(self, match_id: str) -> bool:
-        return match_id in self._rows_by_match
+        return match_id in self._match_pos
+
+    def _day_ids(self, days) -> list[int]:
+        return [self._days.index(d) for d in days if d in self._days]
 
     def _mask(self, f: Filters, codes=None) -> np.ndarray:
         if f.match:
             m = np.zeros(len(self._t), dtype=bool)
-            m[self._rows_by_match.get(f.match, [])] = True
+            pos = self._match_pos.get(f.match)
+            if pos is not None:
+                m[self._rows[pos]] = True
         else:
-            m = self._map == f.map
+            m = self._map_i == self._maps.index(f.map)
             if f.days is not None:
-                m &= np.isin(self._day, f.days)
+                m &= np.isin(self._day_i, self._day_ids(f.days))
         if not f.humans:
             m &= self._bot
         if not f.bots:
@@ -91,51 +122,45 @@ class Store:
             m &= np.isin(self._code, codes)
         return m
 
-    def _matches_for(self, map_id: str, days):
-        ms = self.matches[self.matches["map"] == map_id]
-        return ms if days is None else ms[ms["day"].isin(days)]
+    def _matches_for(self, map_id: str, days) -> list[dict]:
+        return [m for m in self.matches if m["map"] == map_id and (days is None or m["day"] in days)]
 
     # ------------------------------------------------------------------ queries
     def list_matches(self, map_id: str, days=None, q: str = "", sort: str = "players",
                      multi_only: bool = False, limit: int = 400) -> dict:
-        all_on_map = self.matches[self.matches["map"] == map_id]
-        day_counts = all_on_map["day"].value_counts().to_dict()
+        day_counts: dict[str, int] = {}
+        for m in self.matches:
+            if m["map"] == map_id:
+                day_counts[m["day"]] = day_counts.get(m["day"], 0) + 1
         ms = self._matches_for(map_id, days)
         total = len(ms)
-        summary = {c: int(ms[c].sum()) for c in COUNT_COLS}
-        t_max = int(ms["dur"].max()) if len(ms) else 0
+        summary = {c: sum(m["counts"][c] for m in ms) for c in COUNT_COLS}
+        t_max = max((m["dur"] for m in ms), default=0)
         if multi_only:
-            ms = ms[(ms["humans"] + ms["bots"]) > 1]
+            ms = [m for m in ms if m["humans"] + m["bots"] > 1]
         q = q.strip().lower()
         if q:
-            hit = ms["id"].str.contains(q, regex=False) | ms["player_ids"].map(lambda ids: any(q in p for p in ids))
-            ms = ms[hit]
-        combat = ms["Kill"] + ms["Killed"] + ms["BotKill"] + ms["BotKilled"] + ms["KilledByStorm"]
-        keys = {
-            "players": [ms["humans"] + ms["bots"], combat],
-            "action": [combat],
-            "long": [ms["dur"]],
-            "recent": [ms["start"]],
+            ms = [m for m in ms if q in m["id"] or any(q in p for p in m["playerIds"])]
+        combat = lambda m: sum(m["counts"][c] for c in ("Kill", "Killed", "BotKill", "BotKilled", "KilledByStorm"))  # noqa: E731
+        key = {
+            "players": lambda m: (-(m["humans"] + m["bots"]), -combat(m)),
+            "action": lambda m: -combat(m),
+            "long": lambda m: -m["dur"],
+            "recent": lambda m: -m["start"],
         }[sort]
-        order = np.lexsort([-k.to_numpy() for k in reversed(keys)])
-        ms = ms.iloc[order]
-        rows = [
-            {"id": r.id, "day": r.day, "start": int(r.start), "dur": int(r.dur), "humans": int(r.humans),
-             "bots": int(r.bots), "counts": {c: int(getattr(r, c)) for c in COUNT_COLS}}
-            for r in ms.head(limit).itertuples()
-        ]
+        ms = sorted(ms, key=key)  # stable: ties keep chronological order
+        rows = [{k: m[k] for k in ("id", "day", "start", "dur", "humans", "bots", "counts")} for m in ms[:limit]]
         return {"map": map_id, "total": total, "filtered": len(ms), "dayCounts": day_counts,
-                "summary": summary, "tMax": t_max, "matches": rows}
+                "summary": summary, "tMax": int(t_max), "matches": rows}
 
     def get_match(self, match_id: str) -> dict | None:
-        idx = self._rows_by_match.get(match_id)
-        if idx is None:
+        pos = self._match_pos.get(match_id)
+        if pos is None:
             return None
-        meta = self.matches.loc[match_id]
-        order = idx[np.lexsort((self._code[idx], self._t[idx], self._user[idx]))]
+        meta = self.matches[pos]
         players: dict[str, dict] = {}
-        for i in order:
-            uid = self._user[i]
+        for i in self._rows[pos]:  # rows are already ordered by player, then time
+            uid = str(self._users[self._user_i[i]])
             p = players.setdefault(uid, {"id": uid, "bot": bool(self._bot[i]), "path": [], "events": []})
             t, code, u, v = int(self._t[i]), int(self._code[i]), round(float(self._u[i]), 4), round(float(self._v[i]), 4)
             if code in MOVEMENT_CODES:
@@ -143,9 +168,8 @@ class Store:
             else:
                 p["events"].append([t, code, u, v])
         return {
-            "id": match_id, "map": meta["map"], "day": meta["day"], "start": int(meta["start"]),
-            "dur": int(meta["dur"]), "humans": int(meta["humans"]), "bots": int(meta["bots"]),
-            "counts": {c: int(meta[c]) for c in COUNT_COLS},
+            "id": match_id, "map": meta["map"], "day": meta["day"], "start": meta["start"], "dur": meta["dur"],
+            "humans": meta["humans"], "bots": meta["bots"], "counts": meta["counts"],
             "players": sorted(players.values(), key=lambda p: (p["bot"], p["id"])),
         }
 
@@ -159,49 +183,35 @@ class Store:
     def events(self, f: Filters) -> dict:
         """Discrete (non-movement) events as columnar arrays, for markers. Match ids are dictionary-encoded."""
         m = self._mask(f, [c for codes in CATEGORY_CODES.values() for c in codes])
-        match_ids, m_idx = np.unique(self._match[m], return_inverse=True)
+        used, inv = np.unique(self._match_i[m], return_inverse=True)
         return {
             "count": int(m.sum()),
             "u": np.round(self._u[m], 4).tolist(), "v": np.round(self._v[m], 4).tolist(),
             "code": self._code[m].tolist(), "bot": self._bot[m].astype(int).tolist(), "t": self._t[m].tolist(),
-            "matchIds": match_ids.tolist(), "match": m_idx.tolist(),
+            "matchIds": [self.matches[i]["id"] for i in used], "match": inv.tolist(),
         }
 
     # ------------------------------------------------------------------ dashboards
-    @staticmethod
-    def _build_journeys(ev: pd.DataFrame) -> pd.DataFrame:
-        """One row per (match, player): map, day, bot?, how it ended (first death) and when."""
-        e = ev.assign(match_id=ev["match_id"].astype(str), user_id=ev["user_id"].astype(str),
-                      map_id=ev["map_id"].astype(str), day=ev["day"].astype(str))
-        keys = ["match_id", "user_id"]
-        j = e.groupby(keys).agg(map=("map_id", "first"), day=("day", "first"), bot=("is_bot", "first"))
-        dead = e[e["code"].isin(DEATH_CODES)].sort_values("t", kind="stable").groupby(keys).head(1).set_index(keys)
-        j["death_code"] = dead["code"].reindex(j.index).fillna(-1).astype(int)
-        j["death_t"] = dead["t"].reindex(j.index)
-        return j.reset_index()  # keeps match_id / user_id as columns
-
     def summary(self, f: Filters) -> dict:
         """Headline numbers for one map: KPIs, how runs end, and when players die."""
         ms = self._matches_for(f.map, f.days)
-        j = self.journeys
-        sel = (j["map"] == f.map) & np.where(j["bot"], f.bots, f.humans)
+        sel = (self._jmap == self._maps.index(f.map)) & np.where(self._jbot, f.bots, f.humans)
         if f.days is not None:
-            sel &= j["day"].isin(f.days)
-        js = j[sel]
-        dead = js[js["death_code"] >= 0]
-        combat = dead["death_code"].isin((3, 5)).to_numpy()
-        nb = int(dead["death_t"].max() // 60) + 1 if len(dead) else 1
-        b = np.minimum(nb - 1, (dead["death_t"] // 60).astype(int).to_numpy())
+            sel &= np.isin(self._jday, self._day_ids(f.days))
+        died = sel & (self._jdeath_code >= 0)
+        code, dt = self._jdeath_code[died], self._jdeath_t[died]
+        combat = np.isin(code, (3, 5))
+        nb = int(dt.max() // 60) + 1 if len(dt) else 1
+        b = np.minimum(nb - 1, dt // 60)
         by_code = np.bincount(self._code[self._mask(Filters(map=f.map, days=f.days, humans=f.humans, bots=f.bots))], minlength=8)
         med = lambda x: float(np.median(x)) if len(x) else None  # noqa: E731
-        dt = dead["death_t"].to_numpy()
         return {
-            "map": f.map, "matches": int(js["match_id"].nunique()), "journeys": int(len(js)),
-            "t_max": int(ms["dur"].max()) if len(ms) else 0,
+            "map": f.map, "matches": int(len(np.unique(self._jmatch[sel]))), "journeys": int(sel.sum()),
+            "t_max": int(max((m["dur"] for m in ms), default=0)),
             "kpis": {"kills": int(by_code[2] + by_code[4]), "deaths": int(by_code[3] + by_code[5]),
                      "storm": int(by_code[6]), "loot": int(by_code[7])},
-            "outcomes": {"combat": int(combat.sum()), "storm": int((dead["death_code"] == 6).sum()),
-                         "survived": int((js["death_code"] < 0).sum())},
+            "outcomes": {"combat": int(combat.sum()), "storm": int((code == 6).sum()),
+                         "survived": int((self._jdeath_code[sel] < 0).sum())},
             "median_death_t": {"combat": med(dt[combat]), "storm": med(dt[~combat])},
             "death_hist": {"bin": 60, "combat": np.bincount(b[combat], minlength=nb).tolist(),
                            "storm": np.bincount(b[~combat], minlength=nb).tolist()},
@@ -260,7 +270,7 @@ class Store:
         idx = np.flatnonzero(self._mask(f, MOVEMENT_CODES))
         z, j = self._z8[idx], self._ji[idx]
         step = (j[1:] == j[:-1]) & (z[1:] != z[:-1])
-        key = z[:-1][step].astype(np.int64) * (Z * Z) + z[1:][step]
+        key = z[:-1][step] * (Z * Z) + z[1:][step]
         keys, n = np.unique(key, return_counts=True)
         pairs = np.unique(np.stack([key, j[:-1][step]], axis=1), axis=0) if len(key) else np.empty((0, 2), dtype=np.int64)
         runs = dict(zip(*np.unique(pairs[:, 0], return_counts=True))) if len(pairs) else {}

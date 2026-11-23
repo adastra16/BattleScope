@@ -5,8 +5,10 @@ Usage:
     python -I pipeline/build.py <path/to/player_data> [backend_data_dir=backend/data] [frontend_dir=frontend]
 
 Outputs:
-    <backend_data_dir>/events.parquet   one row per (deduplicated) event, with match-relative time and minimap UV
-    <backend_data_dir>/matches.parquet  one row per match: map, day, start, duration, player counts, event counts
+    <backend_data_dir>/store.npz        compact numpy arrays of every event: THIS is what the API loads (numpy only)
+    <backend_data_dir>/matches.json     one record per match: map, day, start, duration, player counts, event counts
+    <backend_data_dir>/events.parquet   the same events as parquet, a convenient copy for analysts (not read by the API)
+    <backend_data_dir>/matches.parquet  the same match table as parquet (used by insights.py)
     <backend_data_dir>/meta.json        map config, days, event codes, data-quality report
     <frontend_dir>/minimaps/<map>.jpg   minimaps resized to 2048x2048 (static assets, served by the frontend)
 """
@@ -15,6 +17,7 @@ import os
 import re
 import sys
 
+import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 from PIL import Image
@@ -158,6 +161,29 @@ def build_minimaps(root, out):
     return sizes
 
 
+def write_runtime_store(events, matches, map_ids, days, out_dir):
+    """numpy-only runtime format for the API. Rows keep their (match, player, time) order, which the API relies on."""
+    pos = {m: i for i, m in enumerate(matches["id"])}
+    users, user_idx = np.unique(events["user_id"].astype(str).to_numpy(), return_inverse=True)
+    np.savez_compressed(
+        os.path.join(out_dir, "store.npz"),
+        match=events["match_id"].astype(str).map(pos).to_numpy(np.int32),
+        user=user_idx.astype(np.int32), users=users.astype(str), bot=events["is_bot"].to_numpy(bool),
+        map=events["map_id"].astype(str).map({m: i for i, m in enumerate(map_ids)}).to_numpy(np.int8),
+        day=events["day"].astype(str).map({d: i for i, d in enumerate(days)}).to_numpy(np.int8),
+        t=events["t"].to_numpy(np.int32), code=events["code"].to_numpy(np.int8),
+        u=events["u"].to_numpy(np.float32), v=events["v"].to_numpy(np.float32),
+    )
+    cols = [c for c in EVENT_CODES if c not in MOVEMENT]
+    records = [
+        {"id": r.id, "map": r.map, "day": r.day, "start": int(r.start), "dur": int(r.dur), "humans": int(r.humans),
+         "bots": int(r.bots), "counts": {c: int(getattr(r, c)) for c in cols}, "playerIds": list(r.player_ids)}
+        for r in matches.itertuples()
+    ]
+    with open(os.path.join(out_dir, "matches.json"), "w") as f:
+        json.dump(records, f, separators=(",", ":"))
+
+
 def main():
     root = sys.argv[1]
     data_out = sys.argv[2] if len(sys.argv) > 2 else os.path.join("backend", "data")
@@ -170,6 +196,7 @@ def main():
     events = build_events(df, matches)
     events.to_parquet(os.path.join(data_out, "events.parquet"), index=False, compression="zstd")
     matches.to_parquet(os.path.join(data_out, "matches.parquet"), index=False, compression="zstd")
+    write_runtime_store(events, matches, list(MAPS), days, data_out)
     src_sizes = build_minimaps(root, front_out)
 
     report |= {
