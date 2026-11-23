@@ -95,7 +95,7 @@ function openAbout() {
       <tr><th>Humans</th><td>${rep.humans}</td><th>Bots</th><td>${rep.bots}</td></tr>
       <tr><th>Rows (raw → clean)</th><td>${rep.rows_raw.toLocaleString()} → ${rep.rows_clean.toLocaleString()}</td><th>Out of bounds</th><td>${rep.out_of_bounds_points}</td></tr></table>
     <table><tr><th>Owner</th><th>Event</th><th>Rows</th></tr>${evRows}</table>
-    <p class="dim">API: <code>${apiBase}</code> · <a href="${apiBase}/docs" target="_blank" rel="noopener">interactive API docs</a></p>`;
+    <p class="dim">API: <code>${apiBase}</code> · <a href="${apiBase}/api/docs" target="_blank" rel="noopener">interactive API docs</a></p>`;
   document.getElementById('about').showModal();
 }
 

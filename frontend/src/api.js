@@ -29,7 +29,7 @@ function get(path, params = {}) {
   return cache.get(url);
 }
 
-export const apiBase = base;
+export const apiBase = base || location.origin;
 export const api = {
   meta: () => get('/meta'),
   matches: (map, params) => get(`/maps/${map}/matches`, params),

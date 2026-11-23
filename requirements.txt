@@ -1,0 +1,3 @@
+# Python dependencies for the Vercel function (api/index.py). Local pipeline deps: pipeline/requirements.txt
+fastapi>=0.115
+numpy>=1.26
