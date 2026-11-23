@@ -1,0 +1,90 @@
+{
+  "maps": {
+    "AmbroseValley": {
+      "scale": 900,
+      "originX": -370,
+      "originZ": -473,
+      "image": "minimaps/AmbroseValley.jpg",
+      "matchCount": 566
+    },
+    "GrandRift": {
+      "scale": 581,
+      "originX": -290,
+      "originZ": -290,
+      "image": "minimaps/GrandRift.jpg",
+      "matchCount": 59
+    },
+    "Lockdown": {
+      "scale": 1000,
+      "originX": -500,
+      "originZ": -500,
+      "image": "minimaps/Lockdown.jpg",
+      "matchCount": 171
+    }
+  },
+  "days": [
+    "February_10",
+    "February_11",
+    "February_12",
+    "February_13",
+    "February_14"
+  ],
+  "eventCodes": {
+    "Position": 0,
+    "BotPosition": 1,
+    "Kill": 2,
+    "Killed": 3,
+    "BotKill": 4,
+    "BotKilled": 5,
+    "KilledByStorm": 6,
+    "Loot": 7
+  },
+  "report": {
+    "rows_raw": 89104,
+    "unknown_events": [],
+    "movement_duplicates_dropped": 210,
+    "non_movement_duplicates_kept": 1295,
+    "out_of_bounds_points": 0,
+    "rows_clean": 88894,
+    "files_read": 1243,
+    "files_failed": [],
+    "matches": 796,
+    "players": 339,
+    "humans": 245,
+    "bots": 94,
+    "events_by_owner": {
+      "human": {
+        "Position": 50501,
+        "Loot": 12770,
+        "BotKill": 2232,
+        "BotKilled": 403,
+        "KilledByStorm": 39,
+        "Kill": 3,
+        "Killed": 3
+      },
+      "bot": {
+        "BotPosition": 21712,
+        "Position": 636,
+        "BotKilled": 297,
+        "BotKill": 183,
+        "Loot": 115
+      }
+    },
+    "matches_with_multiple_files": 53,
+    "matches_spanning_two_day_folders": 1,
+    "source_minimap_sizes": {
+      "AmbroseValley": [
+        4320,
+        4320
+      ],
+      "GrandRift": [
+        2160,
+        2158
+      ],
+      "Lockdown": [
+        9000,
+        9000
+      ]
+    }
+  }
+}
