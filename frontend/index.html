@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BattleScope · LILA BLACK Player Intelligence</title>
+  <meta name="description" content="Player-journey intelligence for LILA BLACK: briefing, heatmap lab, match replay, A/B compare and an automated design radar." />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><circle cx='16' cy='6' r='4' fill='%23ffe814'/><circle cx='48' cy='6' r='4' fill='%23ffe814'/><path d='M9 37C9 21 19 12 32 12s23 9 23 25-10 21-23 21S9 53 9 37Z' fill='%23ff2bd6' stroke='%2307041a' stroke-width='3'/><circle cx='32' cy='29' r='11' fill='white' stroke='%2307041a' stroke-width='2.5'/><circle cx='32' cy='29' r='5' fill='%2307041a'/></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Bangers&family=Bungee&family=Lilita+One&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <nav class="rail" id="rail" aria-label="Sections"></nav>
+    <div class="content" id="content"><div id="view"></div></div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+  <dialog id="about">
+    <form method="dialog"><button class="close" aria-label="Close">×</button></form>
+    <h2>About the data</h2>
+    <div id="aboutBody"></div>
+  </dialog>
+  <script src="config.js"></script>
+  <script type="module" src="src/app.js"></script>
+</body>
+</html>
